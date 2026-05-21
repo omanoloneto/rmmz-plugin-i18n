@@ -16,24 +16,40 @@
  * @desc Whether to add a language option to the options menu. true or false
  * @type boolean
  * @default true
+ *
+ * @command setLanguage
+ * @text Set Language
+ * @desc Changes the current game language immediately.
+ *
+ * @arg language
+ * @text Language Code
+ * @desc Language code to switch to (must match a file in data/i18n/, e.g. en, pt, jp).
+ * @type string
+ * @default en
  */
 
 (() => {
     const pluginName = "i18n";
     const parameters = PluginManager.parameters(pluginName);
     const defaultLanguage = parameters['defaultLanguage'] || 'en';
-    const addLanguageMenu = parameters['addLanguageMenu'] === 'true';
+    const addLanguageMenu = (parameters['addLanguageMenu'] || 'true') === 'true';
 
     const storageKey = 'i18nLanguage';
     let currentLanguage = localStorage.getItem(storageKey) || defaultLanguage;
     let translations = {};
 
-    const fs = require('fs');
-    const path = require('path');
-    const basePath = path.join(process.cwd(), 'data/i18n/');
+    let fs = null;
+    let path = null;
+    let basePath = null;
+    if (Utils.isNwjs()) {
+        fs = require('fs');
+        path = require('path');
+        basePath = path.join(process.cwd(), 'data/i18n/');
+    }
 
     // Function to create default language file
     function createDefaultLanguageFile() {
+        if (!fs) return;
         if (!fs.existsSync(basePath)) {
             fs.mkdirSync(basePath, { recursive: true });
         }
@@ -41,31 +57,43 @@
         const defaultFilePath = path.join(basePath, `${defaultLanguage}.json`);
         if (!fs.existsSync(defaultFilePath)) {
             const defaultContent = {
-                "i18n-code": "en",
+                "i18n-code": defaultLanguage,
                 "i18n-name": "English",
                 "language": "Language",
+                "start-game": "Start Game",
+                "options": "Options",
+                "exit": "Exit"
             };
             fs.writeFileSync(defaultFilePath, JSON.stringify(defaultContent, null, 2));
-            console.log(`Default language file created: ${defaultFilePath}`);
+            console.log(`[i18n] Default language file created: ${defaultFilePath}`);
         }
     }
 
     // Load language files
     function loadTranslations() {
+        if (!fs) return;
         const files = fs.readdirSync(basePath);
-        files.forEach(file => {
+        files.forEach(function(file) {
+            if (path.extname(file).toLowerCase() !== '.json') return;
             const filePath = path.join(basePath, file);
             const languageCode = path.basename(file, path.extname(file));
-            const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-            translations[languageCode] = data;
+            try {
+                const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+                translations[languageCode] = data;
+            } catch (e) {
+                console.error(`[i18n] Failed to parse language file: ${filePath}`, e);
+            }
         });
     }
 
     // Sync language files to ensure all keys are present
     function syncLanguageFiles() {
-        const defaultFilePath = path.join(basePath, `${defaultLanguage}.json`);
-        const defaultData = JSON.parse(fs.readFileSync(defaultFilePath, 'utf8'));
-
+        if (!fs) return;
+        const defaultData = translations[defaultLanguage];
+        if (!defaultData) {
+            console.error(`[i18n] Cannot sync: default language "${defaultLanguage}" not loaded.`);
+            return;
+        }
         for (const [languageCode, data] of Object.entries(translations)) {
             let updated = false;
             for (const key in defaultData) {
@@ -76,16 +104,23 @@
             }
             if (updated) {
                 const filePath = path.join(basePath, `${languageCode}.json`);
-                fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
-                console.log(`Updated language file: ${filePath}`);
+                try {
+                    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+                    console.log(`[i18n] Updated language file: ${filePath}`);
+                } catch (e) {
+                    console.error(`[i18n] Failed to write language file: ${filePath}`, e);
+                }
             }
         }
     }
 
     // Translate a key
     function translate(key) {
-        if (translations[currentLanguage] && translations[currentLanguage][key]) {
+        if (translations[currentLanguage] && translations[currentLanguage][key] !== undefined) {
             return translations[currentLanguage][key];
+        }
+        if (translations[defaultLanguage] && translations[defaultLanguage][key] !== undefined) {
+            return translations[defaultLanguage][key];
         }
         return key;
     }
@@ -111,10 +146,10 @@
 
     // Refresh all windows to reflect language change
     function refreshAllWindows() {
-        SceneManager._scene._windowLayer.children.forEach(window => {
-            if (window.refresh) {
-                window.refresh();
-            }
+        const scene = SceneManager._scene;
+        if (!scene || !scene._windowLayer) return;
+        scene._windowLayer.children.forEach(function(window) {
+            if (window.refresh) window.refresh();
         });
     }
 
@@ -133,28 +168,40 @@
     // Cycle to the next language
     function nextLanguage() {
         const keys = Object.keys(translations);
+        if (keys.length === 0) return;
         const index = keys.indexOf(currentLanguage);
-        const nextIndex = (index + 1) % keys.length;
-        if (keys[nextIndex]) {
-            setLanguage(keys[nextIndex]);
-        }
+        setLanguage(keys[(index + 1) % keys.length]);
     }
 
     // Cycle to the previous language
     function previousLanguage() {
         const keys = Object.keys(translations);
+        if (keys.length === 0) return;
         const index = keys.indexOf(currentLanguage);
-        const prevIndex = (index - 1 + keys.length) % keys.length;
-        if (keys[prevIndex]) {
-            setLanguage(keys[prevIndex]);
+        setLanguage(keys[(index - 1 + keys.length) % keys.length]);
+    }
+
+    // Validate that currentLanguage is actually loaded
+    function validateCurrentLanguage() {
+        if (!translations[currentLanguage]) {
+            console.warn(`[i18n] Language "${currentLanguage}" not found. Falling back to "${defaultLanguage}".`);
+            if (translations[defaultLanguage]) {
+                currentLanguage = defaultLanguage;
+            } else {
+                currentLanguage = Object.keys(translations)[0] || defaultLanguage;
+                console.warn(`[i18n] Default language also not found. Using "${currentLanguage}".`);
+            }
+            localStorage.setItem(storageKey, currentLanguage);
         }
     }
 
     // Initialize plugin
     function initialize() {
+        if (!fs) return;
         createDefaultLanguageFile();
         loadTranslations();
         syncLanguageFiles();
+        validateCurrentLanguage();
     }
 
     // Load translations at the start
@@ -214,7 +261,8 @@
             const symbol = this.commandSymbol(index);
             if (symbol === 'language') {
                 const langCode = this.getConfigValue(symbol);
-                return translations[langCode]['i18n-name'] || langCode;
+                const langData = translations[langCode];
+                return (langData && langData['i18n-name']) ? langData['i18n-name'] : langCode;
             }
             return _Window_Options_statusText.call(this, index);
         };
